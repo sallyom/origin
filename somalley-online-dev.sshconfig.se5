@@ -1,0 +1,11 @@
+Host openshiftdev
+  HostName ec2-54-88-166-154.compute-1.amazonaws.com
+  User ec2-user
+  Port 22
+  UserKnownHostsFile /dev/null
+  StrictHostKeyChecking no
+  PasswordAuthentication no
+  IdentityFile "/home/somalley/.ssh/libra.pem"
+  IdentitiesOnly yes
+  LogLevel FATAL
+
