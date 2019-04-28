@@ -21,6 +21,7 @@ import (
 	"k8s.io/kubernetes/pkg/serviceaccount"
 
 	securityapi "github.com/openshift/origin/pkg/security/apis/security"
+	securityapiv1 "github.com/openshift/origin/pkg/security/apis/security/v1"
 	securityvalidation "github.com/openshift/origin/pkg/security/apis/security/validation"
 	scc "github.com/openshift/origin/pkg/security/apiserver/securitycontextconstraints"
 )
@@ -87,11 +88,16 @@ func (r *REST) Create(ctx context.Context, obj runtime.Object, _ rest.ValidateOb
 			provider scc.SecurityContextConstraintsProvider
 			err      error
 		)
+		coreConstraint := &securityapi.SecurityContextConstraints{}
+		err = securityapiv1.Convert_v1_SecurityContextConstraints_To_security_SecurityContextConstraints(constraint, coreConstraint, nil)
+		if err != nil {
+			return nil, err
+		}
 		if provider, namespace, err = scc.CreateProviderFromConstraint(ns, namespace, constraint, r.client); err != nil {
 			klog.Errorf("Unable to create provider for constraint: %v", err)
 			continue
 		}
-		filled, err := FillPodSecurityPolicySubjectReviewStatus(&pspsr.Status, provider, pspsr.Spec.Template.Spec, constraint)
+		filled, err := FillPodSecurityPolicySubjectReviewStatus(&pspsr.Status, provider, pspsr.Spec.Template.Spec, coreConstraint)
 		if err != nil {
 			klog.Errorf("unable to fill PodSecurityPolicySubjectReviewStatus from constraint %v", err)
 			continue

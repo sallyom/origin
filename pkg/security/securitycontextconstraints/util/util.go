@@ -115,15 +115,6 @@ func GetVolumeFSType(v api.Volume) (securityapi.FSType, error) {
 }
 
 // fsTypeToStringSet converts an FSType slice to a string set.
-func FSTypeToStringSetInternal(fsTypes []securityapi.FSType) sets.String {
-	set := sets.NewString()
-	for _, v := range fsTypes {
-		set.Insert(string(v))
-	}
-	return set
-}
-
-// fsTypeToStringSet converts an FSType slice to a string set.
 func FSTypeToStringSet(fsTypes []securityv1.FSType) sets.String {
 	set := sets.NewString()
 	for _, v := range fsTypes {
@@ -133,23 +124,8 @@ func FSTypeToStringSet(fsTypes []securityv1.FSType) sets.String {
 }
 
 // SCCAllowsAllVolumes checks for FSTypeAll in the scc's allowed volumes.
-func SCCAllowsAllVolumes(scc *securityapi.SecurityContextConstraints) bool {
-	return SCCAllowsFSTypeInternal(scc, securityapi.FSTypeAll)
-}
-
-// SCCAllowsFSTypeInternal is a utility for checking if an SCC allows a particular FSType.
-// If all volumes are allowed then this will return true for any FSType passed.
-func SCCAllowsFSTypeInternal(scc *securityapi.SecurityContextConstraints, fsType securityapi.FSType) bool {
-	if scc == nil {
-		return false
-	}
-
-	for _, v := range scc.Volumes {
-		if v == fsType || v == securityapi.FSTypeAll {
-			return true
-		}
-	}
-	return false
+func SCCAllowsAllVolumes(scc *securityv1.SecurityContextConstraints) bool {
+	return SCCAllowsFSType(scc, securityv1.FSTypeAll)
 }
 
 // SCCAllowsFSType is a utility for checking if an SCC allows a particular FSType.
