@@ -1,24 +1,32 @@
 package util
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"math/rand"
 	"path"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	//apierrs "k8s.io/apimachinery/pkg/api/errors"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	configv1 "github.com/openshift/api/config/v1"
+	legacyconfigv1 "github.com/openshift/api/legacyconfig/v1"
 	osinv1 "github.com/openshift/api/osin/v1"
 	configclient "github.com/openshift/client-go/config/clientset/versioned"
 	"github.com/openshift/library-go/pkg/crypto"
 )
 
 const (
+	htpasswdFile  = "/var/config/system/secrets/htpasswd"
 	serviceURLFmt = "https://test-oauth-svc.%s.svc" // fill in the namespace
 
 	servingCertPathCert = "/var/config/system/secrets/serving-cert/tls.crt"
@@ -46,8 +54,10 @@ func init() {
 // returns OAuth server url, cleanup function, error
 func DeployOAuthServer(oc *CLI, idps []osinv1.IdentityProvider) (string, func(), error) {
 	oauthServerDataDir := FixturePath("testdata", "oauthserver")
+	ns := oc.Namespace()
+	clusterRoleBindingName := fmt.Sprintf(SAName + ns[21:23])
 	cleanups := func() {
-		oc.AsAdmin().Run("delete").Args("clusterrolebinding", SAName).Execute()
+		oc.AsAdmin().Run("delete").Args("clusterrolebinding", clusterRoleBindingName).Execute()
 	}
 
 	if err := oc.AsAdmin().Run("create").Args("-f", path.Join(oauthServerDataDir, "oauth-sa.yaml")).Execute(); err != nil {
@@ -57,7 +67,7 @@ func DeployOAuthServer(oc *CLI, idps []osinv1.IdentityProvider) (string, func(),
 	// the oauth server needs access to kube-system configmaps/extension-apiserver-authentication
 	oauthSARolebinding := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: SAName,
+			Name: clusterRoleBindingName,
 		},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
@@ -68,7 +78,7 @@ func DeployOAuthServer(oc *CLI, idps []osinv1.IdentityProvider) (string, func(),
 			{
 				Kind:      "ServiceAccount",
 				Name:      SAName,
-				Namespace: oc.Namespace(),
+				Namespace: ns,
 			},
 		},
 	}
@@ -76,14 +86,38 @@ func DeployOAuthServer(oc *CLI, idps []osinv1.IdentityProvider) (string, func(),
 		return "", cleanups, err
 	}
 
-	// FIXME: autogenerate the session secret
-	for _, res := range []string{"session-secret.yaml", "cabundle-cm.yaml", "oauth-server.yaml"} {
+	sessionSecret, err := randomSessionSecret(ns)
+	if err != nil {
+		return "", cleanups, err
+	}
+	if _, err := oc.AdminKubeClient().CoreV1().Secrets(ns).Create(sessionSecret); err != nil {
+		return "", cleanups, err
+	}
+
+	for _, res := range []string{"cabundle-cm.yaml", "oauth-server.yaml"} {
 		if err := oc.AsAdmin().Run("create").Args("-f", path.Join(oauthServerDataDir, res)).Execute(); err != nil {
 			return "", cleanups, err
 		}
 	}
 
-	route, err := oc.AdminRouteClient().Route().Routes(oc.Namespace()).Get(RouteName, metav1.GetOptions{})
+	// there's probably a better way to do this, have to think about it...
+	if len(idps) == 0 {
+		if err := oc.AsAdmin().Run("create").Args("-f", path.Join(oauthServerDataDir, "pod-oauth-noidp.yaml")).Execute(); err != nil {
+			return "", cleanups, err
+		}
+	} else {
+		switch idps[0].Name {
+		// we'll have other idps
+		case "htpasswd":
+			for _, res := range []string{"htpasswd-data.yaml", "pod-oauth-htpasswd.yaml"} {
+				if err := oc.AsAdmin().Run("create").Args("-f", path.Join(oauthServerDataDir, res)).Execute(); err != nil {
+					return "", cleanups, err
+				}
+			}
+		}
+	}
+
+	route, err := oc.AdminRouteClient().RouteV1().Routes(ns).Get(RouteName, metav1.GetOptions{})
 	if err != nil {
 		return "", cleanups, err
 	}
@@ -105,7 +139,7 @@ func DeployOAuthServer(oc *CLI, idps []osinv1.IdentityProvider) (string, func(),
 	}
 
 	err = wait.PollImmediate(1*time.Second, 45*time.Second, func() (bool, error) {
-		pod, err := oc.AdminKubeClient().CoreV1().Pods(oc.Namespace()).Get("test-oauth-server", metav1.GetOptions{})
+		pod, err := oc.AdminKubeClient().CoreV1().Pods(ns).Get("test-oauth-server", metav1.GetOptions{})
 		if err != nil {
 			return false, err
 		}
@@ -192,10 +226,79 @@ func oauthServerConfig(oc *CLI, routeURL string, idps []osinv1.IdentityProvider)
 	}, nil
 }
 
+func Htpasswd() []osinv1.IdentityProvider {
+	idp := osinv1.IdentityProvider{
+		Name:            "htpasswd",
+		UseAsChallenger: true,
+		UseAsLogin:      true,
+		MappingMethod:   "claim",
+		Provider:        runtime.RawExtension{Object: &osinv1.HTPasswdPasswordIdentityProvider{File: htpasswdFile}},
+	}
+	return []osinv1.IdentityProvider{idp}
+}
+
 func encode(obj runtime.Object) []byte {
 	bytes, err := runtime.Encode(encoder, obj)
 	if err != nil {
 		return nil
 	}
 	return bytes
+}
+
+func randomSessionSecret(ns string) (*corev1.Secret, error) {
+	skey, err := newSessionSecretsJSON()
+	if err != nil {
+		return nil, err
+	}
+	meta := metav1.ObjectMeta{
+		Name:      "session",
+		Namespace: ns,
+		Labels: map[string]string{
+			"app": "test-oauth-server",
+		},
+		Annotations:     map[string]string{},
+		OwnerReferences: nil,
+	}
+	return &corev1.Secret{
+		ObjectMeta: meta,
+		Data: map[string][]byte{
+			"session": skey,
+		},
+	}, nil
+}
+
+// this is less random than the actual secret generated in cluster-authentication-operator
+func newSessionSecretsJSON() ([]byte, error) {
+	const (
+		sha256KeyLenBytes = sha256.BlockSize // max key size with HMAC SHA256
+		aes256KeyLenBytes = 32               // max key size with AES (AES-256)
+	)
+
+	secrets := &legacyconfigv1.SessionSecrets{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "SessionSecrets",
+			APIVersion: "v1",
+		},
+		Secrets: []legacyconfigv1.SessionSecret{
+			{
+				Authentication: randomString(sha256KeyLenBytes), // 64 chars
+				Encryption:     randomString(aes256KeyLenBytes), // 32 chars
+			},
+		},
+	}
+	secretsBytes, err := json.Marshal(secrets)
+	if err != nil {
+		return nil, fmt.Errorf("error marshalling the session secret: %v", err) // should never happen
+	}
+
+	return secretsBytes, nil
+}
+
+//randomString - random string of A-Z chars with len size
+func randomString(size int) string {
+	bytes := make([]byte, size)
+	for i := 0; i < size; i++ {
+		bytes[i] = byte(65 + rand.Intn(25))
+	}
+	return base64.RawURLEncoding.EncodeToString(bytes)
 }
