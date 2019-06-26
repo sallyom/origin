@@ -142,12 +142,7 @@ func DeployOAuthServer(oc *exutil.CLI, idps []osinv1.IdentityProvider, configMap
 		return nil, cleanups, err
 	}
 
-	configBytes := encode(config)
-	if configBytes == nil {
-		return nil, cleanups, fmt.Errorf("error encoding the OSIN config")
-	}
-
-	if err = oc.AsAdmin().Run("create").Args("configmap", "oauth-config", "--from-literal", fmt.Sprintf("oauth.conf=%s", string(configBytes))).Execute(); err != nil {
+	if err = oc.AsAdmin().Run("create").Args("configmap", "oauth-config", "--from-literal", fmt.Sprintf("oauth.conf=%s", string(encode(config)))).Execute(); err != nil {
 		return nil, cleanups, err
 	}
 
