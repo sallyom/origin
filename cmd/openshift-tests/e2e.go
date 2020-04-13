@@ -108,7 +108,7 @@ var staticSuites = testSuites{
 				if strings.Contains(name, "Cluster should survive master and worker failure and recover with machine health checks") {
 					return false
 				}
-				return strings.Contains(name, "[Feature:EtcdRecovery]") || strings.Contains(name, "[Feature:NodeRecovery]") || isStandardEarlyTest(name)
+				return strings.Contains(name, "[Feature:EtcdRecovery]") || strings.Contains(name, "[Feature:NodeRecovery]") || strings.Contains(name, "[Feature:ClusterOperatorRecovery]") || isStandardEarlyTest(name)
 
 			},
 			TestTimeout:         60 * time.Minute,
